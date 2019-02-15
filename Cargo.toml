@@ -1,0 +1,6 @@
+[package]
+name = "bolti"
+version = "0.1.0"
+authors = ["tock203 <tick@tock.tech>"]
+
+[dependencies]
