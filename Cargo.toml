@@ -2,5 +2,9 @@
 name = "bolti"
 version = "0.1.0"
 authors = ["tock203 <tick@tock.tech>"]
+edition = "2018"
 
 [dependencies]
+clap = "2.32"
+log = "0.4"
+simplelog = "0.5"
