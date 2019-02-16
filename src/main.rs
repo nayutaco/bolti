@@ -1,3 +1,9 @@
+// rust-bindgen writes out .rs files that doesn't follow style conventions... ugh
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
 use clap::{App, Arg};
 use log::info;
 use simplelog::{Config, LevelFilter, SimpleLogger};
