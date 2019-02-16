@@ -1,0 +1,3 @@
+[submodule "ptarmigan"]
+	path = ptarmigan
+	url = https://github.com/nayutaco/ptarmigan.git
