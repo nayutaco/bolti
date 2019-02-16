@@ -11,3 +11,4 @@ simplelog = "0.5"
 
 [build-dependencies]
 bindgen = "0.47"
+cc = { version = "1.0", features = ["parallel"] }

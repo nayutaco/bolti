@@ -14,4 +14,11 @@ fn main() {
   bindings
     .write_to_file(out_path.join("bindings.rs"))
     .expect("Couldn't write bindings!");
+
+  cc::Build::new()
+    .file("ptarmigan/ln/ln.c")
+    .file("ptarmigan/ln/ln_noise.c")
+    .flag("-Iptarmigan/utl")
+    .flag("-Iptarmigan/btc")
+    .compile("ptarmigan");
 }
