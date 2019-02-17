@@ -8,6 +8,7 @@ edition = "2018"
 clap = "2.32"
 log = "0.4"
 simplelog = "0.5"
+hex = "0.3"
 
 [build-dependencies]
 bindgen = "0.47"
