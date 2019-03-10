@@ -69,6 +69,7 @@ fn generate_node_id() {
       panic!("btc_keys_create failed!");
     }
 
+    // TODO: dirty... needs refactoring.
     let node_id_ptr = ln_node_getid();
     (node_id_ptr as *mut [u8; 33]).write(keys.pub_);
     (node_id_ptr as *mut [u8; 32]).sub(1).write(keys.priv_);
