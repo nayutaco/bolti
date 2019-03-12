@@ -16,6 +16,8 @@ use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 use std::time::Duration;
 
+type NodeId = Vec<u8>;
+
 fn main() -> io::Result<()> {
   // cargo build --release disables verbose log
   #[cfg(debug_assertions)]
@@ -51,10 +53,10 @@ fn main() -> io::Result<()> {
   generate_node_id();
 
   for conn in listener.incoming() {
-    let conn = conn?;
+    let mut conn = conn?;
     info!("Connected by {}", conn.peer_addr().unwrap());
     conn.set_read_timeout(Some(Duration::from_millis(10000)))?; // M_WAIT_RESPONSE_MSEC
-    handle_connection(conn)?;
+    handle_connection(&mut conn)?;
   }
 
   Ok(())
@@ -79,7 +81,12 @@ fn generate_node_id() {
   }
 }
 
-fn handle_connection(mut conn: TcpStream) -> io::Result<()> {
+fn handle_connection(conn: &mut TcpStream) -> io::Result<()> {
+  noise_handshake(conn);
+  Ok(())
+}
+
+fn noise_handshake(conn: &mut TcpStream) -> NodeId {
   let mut b_cont = false;
   let mut p_channel: ln_channel_t = unsafe { uninitialized() };
 
@@ -111,5 +118,37 @@ fn handle_connection(mut conn: TcpStream) -> io::Result<()> {
     )
   };
 
-  Ok(())
+  if !act1_recv_succeed || !b_cont {
+    panic!("fail: ln_handshake_recv1");
+  }
+
+  // Act 2
+  conn.write(unsafe { from_raw_parts(buf.buf, buf.len as usize) }).expect("Act 2 failed");
+
+  // Act 3
+  let mut rbuf: [u8; 66] = [0; 66];
+  let num_bytes = conn.read(&mut rbuf).expect("Read timeout");
+  if 0 >= num_bytes {
+    panic!("Connection closed")
+  }
+
+  let mut buf: utl_buf_t = unsafe { zeroed() };
+  let act3_recv_succeed = unsafe {
+    utl_buf_alloccopy(&mut buf as *mut utl_buf_t, rbuf.as_ptr(), rbuf.len() as u32);
+    ln_handshake_recv(
+      &mut p_channel as *mut ln_channel_t,
+      &mut b_cont as *mut bool,
+      &mut buf as *mut utl_buf_t,
+    )
+  };
+  if !act3_recv_succeed || b_cont {
+    panic!("fail: ln_handshake_recv2");
+  }
+
+  assert_eq!(buf.len, 33);  // BTC_SZ_PUBKEY
+
+  let opponent_node_id = unsafe { from_raw_parts(buf.buf, buf.len as usize) };
+  info!("Handshake succeed! node id of the opponent is {}", hex::encode(opponent_node_id));
+
+  opponent_node_id.to_vec()
 }
