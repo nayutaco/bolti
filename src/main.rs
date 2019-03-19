@@ -55,7 +55,6 @@ fn main() -> io::Result<()> {
   for conn in listener.incoming() {
     let mut conn = conn?;
     info!("Connected by {}", conn.peer_addr().unwrap());
-    conn.set_read_timeout(Some(Duration::from_millis(10000)))?; // M_WAIT_RESPONSE_MSEC
     handle_connection(&mut conn)?;
   }
 
@@ -82,19 +81,40 @@ fn generate_node_id() {
 }
 
 fn handle_connection(conn: &mut TcpStream) -> io::Result<()> {
-  noise_handshake(conn);
+  let mut p_channel: ln_channel_t = unsafe { uninitialized() };
+  let node_id = noise_handshake(conn, &mut p_channel);
+
+  let mut header: [u8; 18] = [0; 18];
+  conn.set_read_timeout(None);  // blocks indefinitely
+  let num_bytes = conn.read(&mut header).expect("Connection closed");
+  assert_eq!(num_bytes, header.len());
+  let decrypted_len: u16 = unsafe { ln_noise_dec_len(&mut p_channel.noise, header.as_ptr(), header.len() as u16) };
+
+  let mut payload: Vec<u8> = vec![0; decrypted_len as usize];
+  let num_bytes = conn.read(payload.as_mut_slice()).expect("Connection closed");
+  assert_eq!(num_bytes, decrypted_len as usize);
+
+  let mut buf: utl_buf_t = unsafe { zeroed() };
+  unsafe { utl_buf_alloccopy(&mut buf as *mut utl_buf_t, payload.as_ptr(), payload.len() as u32) };
+  let decryption_succeed = unsafe { ln_noise_dec_msg(&mut p_channel.noise, &mut buf) };
+  if !decryption_succeed {
+    panic!("DECODE: loop end");
+  }
+  debug!("{:?}", hex::encode(payload));
+
   Ok(())
 }
 
-fn noise_handshake(conn: &mut TcpStream) -> NodeId {
+fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
+  conn.set_read_timeout(Some(Duration::from_millis(10000))); // M_WAIT_RESPONSE_MSEC
+
   let mut b_cont = false;
-  let mut p_channel: ln_channel_t = unsafe { uninitialized() };
 
   // Act 1
   let mut buf: utl_buf_t = unsafe { zeroed() };
   let act1_start_succeed = unsafe {
     ln_handshake_start(
-      &mut p_channel as *mut ln_channel_t,
+      p_channel as *mut ln_channel_t,
       &mut buf as *mut utl_buf_t,
       null_mut(), // null indicates starting handshake as responder
     )
@@ -112,7 +132,7 @@ fn noise_handshake(conn: &mut TcpStream) -> NodeId {
   let act1_recv_succeed = unsafe {
     utl_buf_alloccopy(&mut buf as *mut utl_buf_t, rbuf.as_ptr(), rbuf.len() as u32);
     ln_handshake_recv(
-      &mut p_channel as *mut ln_channel_t,
+      p_channel as *mut ln_channel_t,
       &mut b_cont as *mut bool,
       &mut buf as *mut utl_buf_t,
     )
@@ -136,7 +156,7 @@ fn noise_handshake(conn: &mut TcpStream) -> NodeId {
   let act3_recv_succeed = unsafe {
     utl_buf_alloccopy(&mut buf as *mut utl_buf_t, rbuf.as_ptr(), rbuf.len() as u32);
     ln_handshake_recv(
-      &mut p_channel as *mut ln_channel_t,
+      p_channel as *mut ln_channel_t,
       &mut b_cont as *mut bool,
       &mut buf as *mut utl_buf_t,
     )
@@ -150,5 +170,5 @@ fn noise_handshake(conn: &mut TcpStream) -> NodeId {
   let opponent_node_id = unsafe { from_raw_parts(buf.buf, buf.len as usize) };
   info!("Handshake succeed! node id of the opponent is {}", hex::encode(opponent_node_id));
 
-  opponent_node_id.to_vec()
+  ()
 }
