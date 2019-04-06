@@ -15,8 +15,56 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 use std::time::Duration;
+use std::ops::{Deref, DerefMut};
 
-type NodeId = Vec<u8>;
+struct UtlBuf(utl_buf_t);
+
+impl UtlBuf {
+  fn new() -> Self {
+    Self(unsafe { zeroed() })
+  }
+
+  fn as_mut_ptr(&mut self) -> *mut utl_buf_t {
+    &mut self.0 as *mut utl_buf_t
+  }
+
+  fn as_slice(&self) -> &[u8] {
+    unsafe { from_raw_parts(self.0.buf, self.0.len as usize) }
+  }
+}
+
+impl Deref for UtlBuf {
+  type Target = utl_buf_t;
+
+  fn deref(&self) -> &utl_buf_t {
+    &self.0
+  }
+}
+
+impl DerefMut for UtlBuf {
+  fn deref_mut(&mut self) -> &mut utl_buf_t {
+    &mut self.0
+  }
+}
+
+impl Drop for UtlBuf {
+  fn drop(&mut self) {
+    unsafe {
+      utl_buf_free(self.as_mut_ptr())
+    }
+  }
+}
+
+impl<T: AsRef<[u8]>> From<T> for UtlBuf {
+  fn from(seq: T) -> Self {
+    let slice: &[u8] = seq.as_ref();
+    let mut buf = Self::new();
+    unsafe {
+      utl_buf_alloccopy(buf.as_mut_ptr(), slice.as_ptr(), slice.len() as u32);  // Why not usize?
+      buf
+    }
+  }
+}
 
 fn main() -> io::Result<()> {
   // cargo build --release disables verbose log
@@ -55,7 +103,7 @@ fn main() -> io::Result<()> {
   for conn in listener.incoming() {
     let mut conn = conn?;
     info!("Connected by {}", conn.peer_addr().unwrap());
-    handle_connection(&mut conn)?;
+    handle_connection(&mut conn);
   }
 
   Ok(())
@@ -80,42 +128,42 @@ fn generate_node_id() {
   }
 }
 
-fn handle_connection(conn: &mut TcpStream) -> io::Result<()> {
+fn handle_connection(conn: &mut TcpStream) {
   let mut p_channel: ln_channel_t = unsafe { uninitialized() };
   let node_id = noise_handshake(conn, &mut p_channel);
 
   let mut header: [u8; 18] = [0; 18];
-  conn.set_read_timeout(None);  // blocks indefinitely
-  let num_bytes = conn.read(&mut header).expect("Connection closed");
-  assert_eq!(num_bytes, header.len());
-  let decrypted_len: u16 = unsafe { ln_noise_dec_len(&mut p_channel.noise, header.as_ptr(), header.len() as u16) };
+  conn.set_read_timeout(None).expect("Something went wrong");  // blocks indefinitely
 
-  let mut payload: Vec<u8> = vec![0; decrypted_len as usize];
-  let num_bytes = conn.read(payload.as_mut_slice()).expect("Connection closed");
-  assert_eq!(num_bytes, decrypted_len as usize);
+  loop {
+    let num_bytes = conn.read(&mut header).expect("Connection closed");
+    assert_eq!(num_bytes, header.len());
+    let decrypted_len: u16 = unsafe { ln_noise_dec_len(&mut p_channel.noise, header.as_ptr(), header.len() as u16) };
 
-  let mut buf: utl_buf_t = unsafe { zeroed() };
-  unsafe { utl_buf_alloccopy(&mut buf as *mut utl_buf_t, payload.as_ptr(), payload.len() as u32) };
-  let decryption_succeed = unsafe { ln_noise_dec_msg(&mut p_channel.noise, &mut buf) };
-  if !decryption_succeed {
-    panic!("DECODE: loop end");
+    let mut payload: Vec<u8> = vec![0; decrypted_len as usize];
+    let num_bytes = conn.read(payload.as_mut_slice()).expect("Connection closed");
+    assert_eq!(num_bytes, decrypted_len as usize);
+
+    let mut buf: UtlBuf = payload.into();
+    let decryption_succeed = unsafe { ln_noise_dec_msg(&mut p_channel.noise, &mut buf.0) };
+    if !decryption_succeed {
+      panic!("DECODE: loop end");
+    }
+    info!("Received: {}", hex::encode(buf.as_slice()));
   }
-  debug!("{:?}", hex::encode(payload));
-
-  Ok(())
 }
 
 fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
-  conn.set_read_timeout(Some(Duration::from_millis(10000))); // M_WAIT_RESPONSE_MSEC
+  conn.set_read_timeout(Some(Duration::from_millis(10000))).expect("Handshake failed due to timeout"); // M_WAIT_RESPONSE_MSEC
 
   let mut b_cont = false;
 
   // Act 1
-  let mut buf: utl_buf_t = unsafe { zeroed() };
+  let mut buf = UtlBuf::new();
   let act1_start_succeed = unsafe {
     ln_handshake_start(
       p_channel as *mut ln_channel_t,
-      &mut buf as *mut utl_buf_t,
+      buf.as_mut_ptr(),
       null_mut(), // null indicates starting handshake as responder
     )
   };
@@ -129,12 +177,12 @@ fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
     panic!("Connection closed");
   }
 
+  let mut buf: UtlBuf = rbuf[..].into();
   let act1_recv_succeed = unsafe {
-    utl_buf_alloccopy(&mut buf as *mut utl_buf_t, rbuf.as_ptr(), rbuf.len() as u32);
     ln_handshake_recv(
       p_channel as *mut ln_channel_t,
       &mut b_cont as *mut bool,
-      &mut buf as *mut utl_buf_t,
+      buf.as_mut_ptr(),
     )
   };
 
@@ -143,7 +191,7 @@ fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
   }
 
   // Act 2
-  conn.write(unsafe { from_raw_parts(buf.buf, buf.len as usize) }).expect("Act 2 failed");
+  conn.write(buf.as_slice()).expect("Act 2 failed");
 
   // Act 3
   let mut rbuf: [u8; 66] = [0; 66];
@@ -152,13 +200,12 @@ fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
     panic!("Connection closed")
   }
 
-  let mut buf: utl_buf_t = unsafe { zeroed() };
+  let mut buf: UtlBuf = rbuf[..].into();
   let act3_recv_succeed = unsafe {
-    utl_buf_alloccopy(&mut buf as *mut utl_buf_t, rbuf.as_ptr(), rbuf.len() as u32);
     ln_handshake_recv(
       p_channel as *mut ln_channel_t,
       &mut b_cont as *mut bool,
-      &mut buf as *mut utl_buf_t,
+      buf.as_mut_ptr(),
     )
   };
   if !act3_recv_succeed || b_cont {
@@ -167,7 +214,7 @@ fn noise_handshake(conn: &mut TcpStream, p_channel: &mut ln_channel_t) -> () {
 
   assert_eq!(buf.len, 33);  // BTC_SZ_PUBKEY
 
-  let opponent_node_id = unsafe { from_raw_parts(buf.buf, buf.len as usize) };
+  let opponent_node_id = buf.as_slice();
   info!("Handshake succeed! node id of the opponent is {}", hex::encode(opponent_node_id));
 
   ()
