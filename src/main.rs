@@ -5,17 +5,21 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 use clap::{App, Arg};
-use log::{debug, info};
+use log::{debug, info, warn};
 use simplelog::{Config, LevelFilter, SimpleLogger};
 use std::io;
 use std::io::prelude::*;
-use std::io::Read;
+use std::io::{Read, Cursor};
 use std::mem::{uninitialized, zeroed};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::ptr::null_mut;
-use std::slice::from_raw_parts;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::time::Duration;
 use std::ops::{Deref, DerefMut};
+use lightning::ln::msgs::Init;
+use lightning::util::ser::Readable;
+use lazy_static::lazy_static;
+mod deser;
 
 struct UtlBuf(utl_buf_t);
 
@@ -149,7 +153,15 @@ fn handle_connection(conn: &mut TcpStream) {
     if !decryption_succeed {
       panic!("DECODE: loop end");
     }
-    info!("Received: {}", hex::encode(buf.as_slice()));
+    // info!("Received: {}", hex::encode(buf.as_slice()));
+
+    let mut type_slice: [u8; 2] = [0; 2];
+    type_slice.copy_from_slice(&buf.as_slice()[..2]);
+    let type_num = u16::from_be_bytes(type_slice);
+    match deser::deserializers.get(&type_num) {
+      Some(deserializer) => info!("{}", deserializer(&buf.as_slice()[2..])),
+      None => warn!("Unknown message arrived: type={}", type_num)
+    }
   }
 }
 

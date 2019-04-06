@@ -9,6 +9,8 @@ clap = "2.32"
 log = "0.4"
 simplelog = "0.5"
 hex = "0.3"
+lazy_static = "1.3"
+lightning = { git = "https://github.com/tock203/rust-lightning", rev = "a718bc3e2d4629ee2eea529e2de9fecb50d6f3ef" }
 
 [build-dependencies]
 bindgen = "0.47"
